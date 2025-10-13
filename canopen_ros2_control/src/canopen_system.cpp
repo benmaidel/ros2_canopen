@@ -282,19 +282,19 @@ hardware_interface::return_type CanopenSystem::read(
 
   // TODO(Dr. Deni): don't forget to call `prepare_data()` after those are got from RPDO.
 
-  for (const auto & [node_id, canopen_data] : canopen_data_)
-  {
-    if (canopen_data.emcy_data.error_code != 0)
-    {
-      RCLCPP_ERROR(
-        kLogger, "NodeID: 0x%X; Error code: %X; Error register: %X; Manufacturer error code: [%X, %X, %X, %X, %X];",
-        node_id, canopen_data.emcy_data.original_emcy.eec, canopen_data.emcy_data.original_emcy.er,
-        canopen_data.emcy_data.original_emcy.msef[0], canopen_data.emcy_data.original_emcy.msef[1],
-        canopen_data.emcy_data.original_emcy.msef[2], canopen_data.emcy_data.original_emcy.msef[3],
-        canopen_data.emcy_data.original_emcy.msef[4]);
-      return hardware_interface::return_type::ERROR;
-    }
-  }
+  // for (const auto & [node_id, canopen_data] : canopen_data_)
+  // {
+  //   if (canopen_data.emcy_data.error_code != 0)
+  //   {
+  //     RCLCPP_ERROR(
+  //       kLogger, "NodeID: 0x%X; Error code: %X; Error register: %X; Manufacturer error code: [%X, %X, %X, %X, %X];",
+  //       node_id, canopen_data.emcy_data.original_emcy.eec, canopen_data.emcy_data.original_emcy.er,
+  //       canopen_data.emcy_data.original_emcy.msef[0], canopen_data.emcy_data.original_emcy.msef[1],
+  //       canopen_data.emcy_data.original_emcy.msef[2], canopen_data.emcy_data.original_emcy.msef[3],
+  //       canopen_data.emcy_data.original_emcy.msef[4]);
+  //     return hardware_interface::return_type::ERROR;
+  //   }
+  // }
 
   return hardware_interface::return_type::OK;
 }

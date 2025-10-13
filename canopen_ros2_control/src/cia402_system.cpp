@@ -60,52 +60,45 @@ void Cia402System::initDeviceContainer()
     info_.hardware_parameters["bus_config"], tmp_master_bin);
   auto drivers = device_container_->get_registered_drivers();
   RCLCPP_INFO(kLogger, "Number of registered drivers: '%lu'", device_container_->count_drivers());
-  for (auto it = drivers.begin(); it != drivers.end(); it++)
+  for (const auto & [node_id, driver] : drivers)
   {
-    RCLCPP_INFO(kLogger, "Driver type: '%s'", device_container_->get_driver_type(it->first).c_str());
-    if (device_container_->get_driver_type(it->first).compare("ros2_canopen::Cia402Driver") == 0)
-    {
-      auto driver = std::static_pointer_cast<ros2_canopen::Cia402Driver>(it->second);
-      auto nmt_state_cb = [&](canopen::NmtState nmt_state, uint8_t id)
-      { canopen_data_[id].nmt_state.set_state(nmt_state); };
-      // register callback
-      driver->register_nmt_state_cb(nmt_state_cb);
+    const auto driver_type = device_container_->get_driver_type(node_id);
+    RCLCPP_INFO(kLogger, "Driver type: '%s'", driver_type.c_str());
 
-      auto rpdo_cb = [&](ros2_canopen::COData data, uint8_t id)
-      {
-        canopen_data_[id].rpdo_data.set_data(data);
-      };
-      // register callback
-      driver->register_rpdo_cb(rpdo_cb);
+    auto nmt_state_cb = [this](canopen::NmtState nmt_state, uint8_t id) {
+      canopen_data_[id].nmt_state.set_state(nmt_state);
+    };
+    auto rpdo_cb_cia402 = [this](ros2_canopen::COData data, uint8_t id) {
+      canopen_data_[id].rpdo_data.set_data(data);
+    };
+    auto rpdo_cb_proxy = [this](ros2_canopen::COData data, uint8_t id) {
+      canopen_data_[id].set_rpdo_data(data);
+    };
+    auto emcy_cb = [this](ros2_canopen::COEmcy data, uint8_t id) {
+      canopen_data_[id].emcy_data.set_emcy(data);
+    };
+
+    if (driver_type == "ros2_canopen::Cia402Driver")
+    {
+      auto can_driver = std::static_pointer_cast<ros2_canopen::Cia402Driver>(driver);
+      can_driver->register_nmt_state_cb(nmt_state_cb);
+      can_driver->register_rpdo_cb(rpdo_cb_cia402);
     }
-    else
+    else if (driver_type == "ros2_canopen::ProxyDriver")
     {
-      auto driver = std::static_pointer_cast<ros2_canopen::ProxyDriver>(it->second);
-      auto nmt_state_cb = [&](canopen::NmtState nmt_state, uint8_t id)
-      { canopen_data_[id].nmt_state.set_state(nmt_state); };
-      // register callback
-      driver->register_nmt_state_cb(nmt_state_cb);
-
-      auto rpdo_cb = [&](ros2_canopen::COData data, uint8_t id)
-      {
-        if (id == 0x20)
-        {
-          RCLCPP_INFO(kLogger, "RPDO received from node 0x%X: index 0x%X subindex 0x%X data 0x%lX", id, data.index_, data.subindex_, data.data_);
-        }
-        canopen_data_[id].set_rpdo_data(data);
-      };
-      // register callback
-      driver->register_rpdo_cb(rpdo_cb);
-
-      auto emcy_cb = [&](ros2_canopen::COEmcy data, uint8_t id)
-      { canopen_data_[id].emcy_data.set_emcy(data); };
-      // register callback
-      driver->register_emcy_cb(emcy_cb);
+      auto can_driver = std::static_pointer_cast<ros2_canopen::ProxyDriver>(driver);
+      can_driver->register_nmt_state_cb(nmt_state_cb);
+      can_driver->register_rpdo_cb(rpdo_cb_proxy);
+      can_driver->register_emcy_cb(emcy_cb);
+    }
+    else {
+      RCLCPP_ERROR(kLogger, "Unknown driver type '%s' for NodeID 0x%X", driver_type.c_str(), node_id);
+      continue;
     }
 
     RCLCPP_INFO(
       kLogger, "\nRegistered driver:\n    name: '%s'\n    node_id: '0x%X'",
-      it->second->get_node_base_interface()->get_name(), it->first);
+      driver->get_node_base_interface()->get_name(), node_id);
   }
 
   RCLCPP_INFO(device_container_->get_logger(), "Initialisation successful.");
@@ -277,14 +270,18 @@ hardware_interface::return_type Cia402System::read(
 
   auto drivers = device_container_->get_registered_drivers();
 
-  for (auto it = canopen_data_.begin(); it != canopen_data_.end(); ++it)
+  for (const auto & [node_id, canopen_data] : canopen_data_)
   {
-    auto motion_controller_driver =
-      std::static_pointer_cast<ros2_canopen::Cia402Driver>(drivers[it->first]);
-    // get position
-    motor_data_[it->first].actual_position = motion_controller_driver->get_position();
-    // get speed
-    motor_data_[it->first].actual_speed = motion_controller_driver->get_speed();
+    const auto driver_type = device_container_->get_driver_type(node_id);
+    if (driver_type.compare("ros2_canopen::Cia402Driver") == 0)
+    {
+      auto motion_controller_driver =
+      std::static_pointer_cast<ros2_canopen::Cia402Driver>(drivers[node_id]);
+      // get position
+      motor_data_[node_id].actual_position = motion_controller_driver->get_position();
+      // get speed
+      motor_data_[node_id].actual_speed = motion_controller_driver->get_speed();
+    }
   }
 
   return ret_val;
@@ -297,61 +294,116 @@ hardware_interface::return_type Cia402System::write(
 
   for (auto it = canopen_data_.begin(); it != canopen_data_.end(); ++it)
   {
-    // TODO(livanov93): check casting
-    auto motion_controller_driver =
-      std::static_pointer_cast<ros2_canopen::Cia402Driver>(drivers[it->first]);
-    // do same as in proxy system first - handle nmt, tpdo, rpdo
-    // reset node nmt
-    if (it->second.nmt_state.reset_command())
+    const auto driver_type = device_container_->get_driver_type(it->first);
+    if (driver_type.compare("ros2_canopen::Cia402Driver") == 0)
     {
-      motion_controller_driver->reset_node_nmt_command();
+
+      // TODO(livanov93): check casting
+      auto motion_controller_driver =
+        std::static_pointer_cast<ros2_canopen::Cia402Driver>(drivers[it->first]);
+      // do same as in proxy system first - handle nmt, tpdo, rpdo
+      // reset node nmt
+      if (it->second.nmt_state.reset_command())
+      {
+        motion_controller_driver->reset_node_nmt_command();
+      }
+
+      // start nmt
+      if (it->second.nmt_state.start_command())
+      {
+        motion_controller_driver->start_node_nmt_command();
+      }
+
+      // tpdo data one shot mechanism
+      if (it->second.tpdo_data.write_command())
+      {
+        it->second.tpdo_data.prepare_data();
+        motion_controller_driver->tpdo_transmit(it->second.tpdo_data.original_data);
+      }
+
+      // initialisation
+      handleInit(it->first, motion_controller_driver);
+
+      // halt
+      handleHalt(it->first, motion_controller_driver);
+
+      // recover
+      handleRecover(it->first, motion_controller_driver);
+
+      // mode switching
+      switchModes(it->first, motion_controller_driver);
+
+      const uint16_t & mode = motion_controller_driver->get_mode();
+
+      switch (mode)
+      {
+        case MotorBase::No_Mode:
+          break;
+        case MotorBase::Profiled_Position:
+        case MotorBase::Cyclic_Synchronous_Position:
+        case MotorBase::Interpolated_Position:
+          motion_controller_driver->set_target(motor_data_[it->first].target.position_value);
+          break;
+        case MotorBase::Profiled_Velocity:
+        case MotorBase::Cyclic_Synchronous_Velocity:
+          motion_controller_driver->set_target(motor_data_[it->first].target.velocity_value);
+          break;
+        case MotorBase::Profiled_Torque:
+          motion_controller_driver->set_target(motor_data_[it->first].target.torque_value);
+          break;
+        default:
+          RCLCPP_INFO(kLogger, "Mode %u not supported", mode);
+      }
     }
-
-    // start nmt
-    if (it->second.nmt_state.start_command())
+    else
     {
-      motion_controller_driver->start_node_nmt_command();
-    }
+      if (drivers.find(it->first) == drivers.end())
+      {
+        // this is expeced for NodeID 0x00 - why do we have it at all?
+        RCLCPP_DEBUG(kLogger, "Driver for NodeID 0x%X not found. Skipping...", it->first);
+        continue;
+      }
+      auto proxy_driver = std::static_pointer_cast<ros2_canopen::ProxyDriver>(drivers[it->first]);
 
-    // tpdo data one shot mechanism
-    if (it->second.tpdo_data.write_command())
-    {
-      it->second.tpdo_data.prepare_data();
-      motion_controller_driver->tpdo_transmit(it->second.tpdo_data.original_data);
-    }
+      // reset node nmt
+      if (it->second.nmt_state.reset_command())
+      {
+        it->second.nmt_state.reset_fbk = static_cast<double>(proxy_driver->reset_node_nmt_command());
+      }
 
-    // initialisation
-    handleInit(it->first, motion_controller_driver);
+      // start nmt
+      if (it->second.nmt_state.start_command())
+      {
+        it->second.nmt_state.start_fbk = static_cast<double>(proxy_driver->start_node_nmt_command());
+      }
 
-    // halt
-    handleHalt(it->first, motion_controller_driver);
+      // canopen_ros2_control::WORos2ControlCoData data;
+      // data.index = 0x2110;
+      // data.subindex = 0x00;
+      // data.data = int16_t(123);
+      // data.prepare_data();
+      // RCLCPP_INFO(kLogger, "This is a debug message in HW-write().....");
+      // RCLCPP_INFO(kLogger, "NodeID: 0x%X; Index: 0x%X; Subindex: 0x%X; Data: %u",
+      //   it->first,
+      //   data.original_data.index_,
+      //   data.original_data.subindex_,
+      //   data.original_data.data_);
+      // RCLCPP_INFO(kLogger, "--- END of the debug message in HW-write()");
+      // proxy_driver->tpdo_transmit(data.original_data);
 
-    // recover
-    handleRecover(it->first, motion_controller_driver);
-
-    // mode switching
-    switchModes(it->first, motion_controller_driver);
-
-    const uint16_t & mode = motion_controller_driver->get_mode();
-
-    switch (mode)
-    {
-      case MotorBase::No_Mode:
-        break;
-      case MotorBase::Profiled_Position:
-      case MotorBase::Cyclic_Synchronous_Position:
-      case MotorBase::Interpolated_Position:
-        motion_controller_driver->set_target(motor_data_[it->first].target.position_value);
-        break;
-      case MotorBase::Profiled_Velocity:
-      case MotorBase::Cyclic_Synchronous_Velocity:
-        motion_controller_driver->set_target(motor_data_[it->first].target.velocity_value);
-        break;
-      case MotorBase::Profiled_Torque:
-        motion_controller_driver->set_target(motor_data_[it->first].target.torque_value);
-        break;
-      default:
-        RCLCPP_INFO(kLogger, "Mode %u not supported", mode);
+      // tpdo data one shot mechanism
+      if (it->second.tpdo_data.write_command())
+      {
+        it->second.tpdo_data.prepare_data();
+        try
+        {
+          proxy_driver->tpdo_transmit(it->second.tpdo_data.original_data);
+        }
+        catch(const std::exception& e)
+        {
+          std::cerr << e.what() << '\n';
+        }
+      }
     }
   }
 
