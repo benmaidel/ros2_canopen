@@ -23,7 +23,9 @@
 //----------------------------------------------------------------------
 
 #include "canopen_ros2_control/cia402_system.hpp"
+#include "canopen_ros2_control/canopen_system.hpp"
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include <memory>
 
 namespace
 {
@@ -60,23 +62,46 @@ void Cia402System::initDeviceContainer()
   RCLCPP_INFO(kLogger, "Number of registered drivers: '%lu'", device_container_->count_drivers());
   for (auto it = drivers.begin(); it != drivers.end(); it++)
   {
-    auto driver = std::static_pointer_cast<ros2_canopen::Cia402Driver>(it->second);
-
-    auto nmt_state_cb = [&](canopen::NmtState nmt_state, uint8_t id)
-    { canopen_data_[id].nmt_state.set_state(nmt_state); };
-    // register callback
-    driver->register_nmt_state_cb(nmt_state_cb);
-
-    auto rpdo_cb = [&](ros2_canopen::COData data, uint8_t id)
+    RCLCPP_INFO(kLogger, "Driver type: '%s'", device_container_->get_driver_type(it->first).c_str());
+    if (device_container_->get_driver_type(it->first).compare("ros2_canopen::Cia402Driver") == 0)
     {
-      if (id == 0x20)
+      auto driver = std::static_pointer_cast<ros2_canopen::Cia402Driver>(it->second);
+      auto nmt_state_cb = [&](canopen::NmtState nmt_state, uint8_t id)
+      { canopen_data_[id].nmt_state.set_state(nmt_state); };
+      // register callback
+      driver->register_nmt_state_cb(nmt_state_cb);
+
+      auto rpdo_cb = [&](ros2_canopen::COData data, uint8_t id)
       {
-        RCLCPP_INFO(kLogger, "RPDO received from node 0x%X: index 0x%X subindex 0x%X data 0x%lX", id, data.index_, data.subindex_, data.data_);
-      }
-      canopen_data_[id].set_rpdo_data(data);
-    };
-    // register callback
-    driver->register_rpdo_cb(rpdo_cb);
+        canopen_data_[id].rpdo_data.set_data(data);
+      };
+      // register callback
+      driver->register_rpdo_cb(rpdo_cb);
+    }
+    else
+    {
+      auto driver = std::static_pointer_cast<ros2_canopen::ProxyDriver>(it->second);
+      auto nmt_state_cb = [&](canopen::NmtState nmt_state, uint8_t id)
+      { canopen_data_[id].nmt_state.set_state(nmt_state); };
+      // register callback
+      driver->register_nmt_state_cb(nmt_state_cb);
+
+      auto rpdo_cb = [&](ros2_canopen::COData data, uint8_t id)
+      {
+        if (id == 0x20)
+        {
+          RCLCPP_INFO(kLogger, "RPDO received from node 0x%X: index 0x%X subindex 0x%X data 0x%lX", id, data.index_, data.subindex_, data.data_);
+        }
+        canopen_data_[id].set_rpdo_data(data);
+      };
+      // register callback
+      driver->register_rpdo_cb(rpdo_cb);
+
+      auto emcy_cb = [&](ros2_canopen::COEmcy data, uint8_t id)
+      { canopen_data_[id].emcy_data.set_emcy(data); };
+      // register callback
+      driver->register_emcy_cb(emcy_cb);
+    }
 
     RCLCPP_INFO(
       kLogger, "\nRegistered driver:\n    name: '%s'\n    node_id: '0x%X'",

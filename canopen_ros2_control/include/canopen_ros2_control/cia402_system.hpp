@@ -115,7 +115,7 @@ protected:
   // can stuff
   std::map<uint, MotorNodeData> motor_data_;
 
-private:
+protected:
   void switchModes(uint id, const std::shared_ptr<ros2_canopen::Cia402Driver> & driver);
 
   void handleInit(uint id, const std::shared_ptr<ros2_canopen::Cia402Driver> & driver);
